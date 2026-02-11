@@ -3,7 +3,7 @@ import logging
 import tempfile
 import yt_dlp
 from telegram import Update
-from telegram.ext import Updater, CommandHandler, MessageHandler, Filters, CallbackContext
+from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 if not TOKEN:
@@ -12,20 +12,19 @@ if not TOKEN:
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-def start(update: Update, context: CallbackContext):
-    update.message.reply_text(
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    await update.message.reply_text(
         "👋 Yo, I'm *Joss*! 🎵\n\n"
-        "📥 You want to download TikTok videos — *unlimited*, no watermark?\n"
-        "👉 Just drop the link — I’ll give you the **HD video + MP3** instantly! 🚀",
+        "📥 Drop a TikTok link — I'll send HD video + MP3 instantly! 🚀",
         parse_mode='Markdown'
     )
 
-def handle_tiktok(update: Update, context: CallbackContext):
+async def handle_tiktok(update: Update, context: ContextTypes.DEFAULT_TYPE):
     text = update.message.text.strip()
     if "tiktok.com" not in text:
-        return update.message.reply_text("⚠️ Please send a valid TikTok link")
+        return await update.message.reply_text("⚠️ Send TikTok link")
 
-    msg = update.message.reply_text("⏳ Downloading... (This may take 20-40 seconds)")
+    msg = await update.message.reply_text("⏳ Downloading...")
 
     try:
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -33,62 +32,42 @@ def handle_tiktok(update: Update, context: CallbackContext):
                 'outtmpl': os.path.join(tmpdir, '%(id)s.%(ext)s'),
                 'quiet': True,
                 'no_warnings': True,
-                'noplaylist': True,
-                'socket_timeout': 45,
-                'format': 'bv[height<=1080]+ba/b[height<=1080]',  # Best video up to 1080p + audio
-                'progress_hooks': [lambda d: (
-                    msg.edit_text(f"⏳ Downloading...\n{d.get('_percent_str', '0%')} • {d.get('_speed_str', '—')}")
-                    if d['status'] == 'downloading' else None
-                )]
+                'format': 'bv[height<=1080]+ba/b',
             }
-
             with yt_dlp.YoutubeDL(ydl_opts) as ydl:
                 info = ydl.extract_info(text, download=True)
                 file_path = ydl.prepare_filename(info)
 
-            # Fix .webm → .mp4
             if file_path.endswith('.webm'):
                 new_path = file_path.replace('.webm', '.mp4')
                 os.rename(file_path, new_path)
                 file_path = new_path
 
-            msg.edit_text("📤 Uploading video...")
-            update.message.reply_video(
+            await msg.edit_text("📤 Sending video...")
+            await update.message.reply_video(
                 open(file_path, 'rb'),
-                caption=f"🎬 {info.get('title', 'TikTok Video')}",
+                caption=f"🎬 {info.get('title', 'Video')}",
                 supports_streaming=True
             )
 
-            # Send MP3
-            msg.edit_text("🎵 Extracting audio...")
+            # MP3
             ydl_opts_mp3 = {
                 'format': 'ba[ext=m4a]',
                 'outtmpl': os.path.join(tmpdir, '%(id)s.mp3'),
-                'quiet': True,
-                'no_warnings': True
+                'quiet': True
             }
             with yt_dlp.YoutubeDL(ydl_opts_mp3) as ydl:
                 ydl.download([text])
                 mp3_path = os.path.join(tmpdir, f"{info['id']}.mp3")
+            await update.message.reply_audio(open(mp3_path, 'rb'), title=info.get('title', 'Audio'))
 
-            update.message.reply_audio(
-                open(mp3_path, 'rb'),
-                title=info.get('title', 'Audio')
-            )
-
-        msg.edit_text("🎉 Done! Video + MP3 sent ✅")
+        await msg.edit_text("🎉 Done!")
 
     except Exception as e:
-        msg.edit_text(f"❌ Failed: {str(e)[:80]}")
-
-def main():
-    updater = Updater(TOKEN, use_context=True)
-    dp = updater.dispatcher
-    dp.add_handler(CommandHandler("start", start))
-    dp.add_handler(MessageHandler(Filters.text & ~Filters.command, handle_tiktok))
-    logger.info("✅ Joss TikTok Bot ready")
-    updater.start_polling(drop_pending_updates=True)
-    updater.idle()
+        await msg.edit_text(f"❌ {str(e)[:80]}")
 
 if __name__ == '__main__':
-    main()
+    app = Application.builder().token(TOKEN).build()
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_tiktok))
+    app.run_polling()
